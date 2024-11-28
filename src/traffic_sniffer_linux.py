@@ -1,9 +1,3 @@
-# =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
-# =                          -                                   -=
-# =    TRAFFIC SNIFFER                                           -=
-# =                          -                                   -=
-# =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
-
 import socket
 import struct
 import datetime
@@ -37,31 +31,14 @@ def process_dns_packet(data: bytes) -> Optional[str]:
         domain_name = []
         i = 12
         while True:
+            if i >= len(data):
+                break
             length = data[i]
             if length == 0:
                 break
             domain_name.append(data[i + 1 : i + 1 + length].decode())
             i += length + 1
         return ".".join(domain_name)
-    except Exception:
-        return None
-
-# =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
-# Função para processar pacotes HTTP
-# =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
-def process_http_packet(data: bytes) -> Optional[str]:
-    """
-    Processa um pacote HTTP e retorna a URL requisitada, se encontrada.
-    """
-    try:
-        http_data = data.decode(errors="ignore")
-        if "GET" in http_data or "POST" in http_data:
-            lines = http_data.split("\r\n")
-            for line in lines:
-                if line.startswith("Host:"):
-                    host = line.split(": ")[1]
-                    return f"http://{host}"
-        return None
     except Exception:
         return None
 
@@ -83,26 +60,53 @@ def sniff_traffic(interface: str, output_file: str) -> None:
         while True:
             packet, _ = sock.recvfrom(65535)
 
+            # Verificar se o pacote é grande o suficiente para o cabeçalho Ethernet
+            if len(packet) < 14:
+                print("Pacote ignorado: tamanho insuficiente para cabeçalho Ethernet")
+                continue
+
             # Processa cabeçalho Ethernet
             eth_header = packet[:14]
-            eth_data = struct.unpack("!6s6sH", eth_header)
+            try:
+                eth_data = struct.unpack("!6s6sH", eth_header)
+            except struct.error:
+                print("Erro ao desempacotar cabeçalho Ethernet")
+                continue
+
             eth_protocol = eth_data[2]
 
             # Se o protocolo não for IPv4, ignore
             if eth_protocol != 0x0800:
                 continue
 
+            # Verificar se o pacote é grande o suficiente para o cabeçalho IPv4
+            if len(packet) < 34:
+                print("Pacote ignorado: tamanho insuficiente para cabeçalho IPv4")
+                continue
+
             # Processa cabeçalho IPv4
             ip_header = packet[14:34]
-            iph = struct.unpack("!BBHHHBBH4s4s", ip_header)
+            try:
+                iph = struct.unpack("!BBHHHBBH4s4s", ip_header)
+            except struct.error:
+                print("Erro ao desempacotar cabeçalho IPv4")
+                continue
+
             protocol = iph[6]
             source_ip = socket.inet_ntoa(iph[8])
             dest_ip = socket.inet_ntoa(iph[9])
 
             # Se for UDP (DNS)
             if protocol == 17:  # UDP
+                if len(packet) < 42:
+                    print("Pacote ignorado: tamanho insuficiente para cabeçalho UDP")
+                    continue
                 udp_header = packet[34:42]
-                src_port, dest_port, length, checksum = struct.unpack("!HHHH", udp_header)
+                try:
+                    src_port, dest_port, length, checksum = struct.unpack("!HHHH", udp_header)
+                except struct.error:
+                    print("Erro ao desempacotar cabeçalho UDP")
+                    continue
 
                 # DNS está na porta 53
                 if src_port == 53 or dest_port == 53:
@@ -112,22 +116,6 @@ def sniff_traffic(interface: str, output_file: str) -> None:
                         now = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
                         history.append((now, source_ip, f"http://{domain}"))
                         print(f"DNS: {domain} de {source_ip}")
-
-            # Se for TCP (HTTP)
-            elif protocol == 6:  # TCP
-                tcp_header = packet[34:54]
-                src_port, dest_port, sequence, acknowledgment, offset_reserved_flags = struct.unpack(
-                    "!HHLLH", tcp_header
-                )
-                tcp_data = packet[54:]
-
-                # HTTP normalmente usa porta 80
-                if src_port == 80 or dest_port == 80:
-                    url = process_http_packet(tcp_data)
-                    if url:
-                        now = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
-                        history.append((now, source_ip, url))
-                        print(f"HTTP: {url} de {source_ip}")
 
             # Atualiza o arquivo HTML
             generate_html(history, output_file)

