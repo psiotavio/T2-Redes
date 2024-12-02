@@ -3,9 +3,6 @@ import struct
 import datetime
 from typing import Optional
 
-# =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
-# Função para criar o arquivo HTML do histórico de navegação
-# =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
 def generate_html(history: list, output_file: str) -> None:
     """
     Gera um arquivo HTML com o histórico de navegação.
@@ -17,59 +14,47 @@ def generate_html(history: list, output_file: str) -> None:
             f.write(f'<li>{date_time} - {ip} - <a href="{url}">{url}</a></li>\n')
         f.write("</ul>\n</body>\n</html>")
 
-# =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
-# Função para processar pacotes HTTP
-# =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
 def process_http_packet(data: bytes) -> Optional[str]:
     """
     Processa um pacote HTTP e retorna a URL requisitada, se encontrada.
     """
     try:
         request = data.decode(errors="ignore")
-        if "GET" in request or "POST" in request:
+        if "Host:" in request:
             lines = request.split("\r\n")
+            host = None
             for line in lines:
                 if line.startswith("Host:"):
-                    host = line.split(":")[1].strip()
-                    return f"http://{host}"
+                    host = line.split(": ", 1)[1].strip()
+            if host:
+                return f"http://{host}"
         return None
     except Exception:
         return None
 
-# =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
-# Função para processar pacotes DNS
-# =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
 def process_dns_packet(data: bytes) -> Optional[str]:
     """
     Processa um pacote DNS e retorna o nome do domínio requisitado, se encontrado.
     """
     try:
-        transaction_id, flags, questions, answer_rrs, authority_rrs, additional_rrs = struct.unpack(
-            "!HHHHHH", data[:12]
-        )
+        i = 12  # Início do campo "Questions"
         domain_name = []
-        i = 12
         while True:
-            if i >= len(data):
-                break
             length = data[i]
             if length == 0:
                 break
-            domain_name.append(data[i + 1 : i + 1 + length].decode())
-            i += length + 1
+            i += 1
+            domain_name.append(data[i:i + length].decode())
+            i += length
         return ".".join(domain_name)
     except Exception:
         return None
 
-# =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
-# Função principal para capturar e analisar pacotes
-# =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
 def sniff_traffic(interface: str, output_file: str) -> None:
     """
     Captura pacotes DNS e HTTP usando sockets RAW e registra o histórico de navegação.
     """
     try:
-        # Criando socket RAW para capturar pacotes
         sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.ntohs(0x0800))
         sock.bind((interface, 0))
         print(f"Capturando pacotes na interface {interface}...")
@@ -79,39 +64,30 @@ def sniff_traffic(interface: str, output_file: str) -> None:
         while True:
             packet, _ = sock.recvfrom(65535)
 
-            # Verificar se o pacote é grande o suficiente para o cabeçalho Ethernet
             if len(packet) < 14:
                 continue
 
-            # Processa cabeçalho Ethernet
             eth_header = packet[:14]
-            eth_data = struct.unpack("!6s6sH", eth_header)
-            eth_protocol = eth_data[2]
+            eth_protocol = struct.unpack("!6s6sH", eth_header)[2]
 
-            # Se o protocolo não for IPv4, ignore
-            if eth_protocol != 0x0800:
+            if eth_protocol != 0x0800:  # Apenas IPv4
                 continue
 
-            # Verificar se o pacote é grande o suficiente para o cabeçalho IPv4
             if len(packet) < 34:
                 continue
 
-            # Processa cabeçalho IPv4
             ip_header = packet[14:34]
             iph = struct.unpack("!BBHHHBBH4s4s", ip_header)
             protocol = iph[6]
             source_ip = socket.inet_ntoa(iph[8])
-            dest_ip = socket.inet_ntoa(iph[9])
 
-            # Se for UDP (DNS)
             if protocol == 17:  # UDP
                 if len(packet) < 42:
                     continue
                 udp_header = packet[34:42]
-                src_port, dest_port, length, checksum = struct.unpack("!HHHH", udp_header)
+                src_port, dest_port = struct.unpack("!HH", udp_header[:4])
 
-                # DNS está na porta 53
-                if src_port == 53 or dest_port == 53:
+                if src_port == 53 or dest_port == 53:  # DNS
                     dns_data = packet[42:]
                     domain = process_dns_packet(dns_data)
                     if domain:
@@ -119,17 +95,13 @@ def sniff_traffic(interface: str, output_file: str) -> None:
                         history.append((now, source_ip, f"http://{domain}"))
                         print(f"DNS: {domain} de {source_ip}")
 
-            # Se for TCP (HTTP)
             elif protocol == 6:  # TCP
                 if len(packet) < 54:
                     continue
                 tcp_header = packet[34:54]
-                src_port, dest_port, seq, ack, offset_reserved_flags, window, checksum, urg_ptr = struct.unpack(
-                    "!HHLLHHHH", tcp_header
-                )
+                src_port, dest_port = struct.unpack("!HH", tcp_header[:4])
 
-                # HTTP está na porta 80
-                if src_port == 80 or dest_port == 80:
+                if src_port == 80 or dest_port == 80:  # HTTP
                     http_data = packet[54:]
                     url = process_http_packet(http_data)
                     if url:
@@ -137,7 +109,6 @@ def sniff_traffic(interface: str, output_file: str) -> None:
                         history.append((now, source_ip, url))
                         print(f"HTTP: {url} de {source_ip}")
 
-            # Atualiza o arquivo HTML
             generate_html(history, output_file)
 
     except KeyboardInterrupt:
@@ -147,9 +118,6 @@ def sniff_traffic(interface: str, output_file: str) -> None:
     finally:
         sock.close()
 
-# =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
-# Entrada principal do programa
-# =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
 if __name__ == "__main__":
     import sys
 

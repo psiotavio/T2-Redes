@@ -1,22 +1,12 @@
-# =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
-# =                          -                                   -=
-# =    SCAN DE REDE                                              -=
-# =                          -                                   -=
-# =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
-
+import os
 import socket
 import struct
 import time
 import ipaddress
 from typing import List, Tuple
 
-# =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
-# Função para calcular o checksum do pacote ICMP
-# =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+
 def calculate_checksum(packet: bytes) -> int:
-    """
-    Calcula o checksum para o pacote ICMP.
-    """
     if len(packet) % 2 == 1:
         packet += b'\0'
     checksum = sum(struct.unpack('!H', packet[i:i + 2])[0] for i in range(0, len(packet), 2))
@@ -24,29 +14,19 @@ def calculate_checksum(packet: bytes) -> int:
     checksum += checksum >> 16
     return ~checksum & 0xffff
 
-# =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
-# Função para criar um pacote ICMP Echo Request
-# =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+
 def create_icmp_packet(identifier: int, sequence: int) -> bytes:
-    """
-    Cria um pacote ICMP Echo Request.
-    """
     icmp_type = 8  # Echo Request
     code = 0
     checksum = 0
     header = struct.pack('!BBHHH', icmp_type, code, checksum, identifier, sequence)
-    payload = b'NetworkScanner'  # Dados arbitrários
+    payload = b'NetworkScanner'
     checksum = calculate_checksum(header + payload)
     header = struct.pack('!BBHHH', icmp_type, code, checksum, identifier, sequence)
     return header + payload
 
-# =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
-# Função para realizar o envio e recebimento de pacotes ICMP
-# =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+
 def send_and_receive_icmp(host: str, timeout: int, identifier: int) -> float:
-    """
-    Envia um pacote ICMP Echo Request e aguarda o Echo Reply.
-    """
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP) as sock:
             sock.settimeout(timeout / 1000)
@@ -54,19 +34,31 @@ def send_and_receive_icmp(host: str, timeout: int, identifier: int) -> float:
             start_time = time.time()
             sock.sendto(packet, (host, 1))
             sock.recvfrom(1024)
-            return (time.time() - start_time) * 1000  # Tempo em milissegundos
+            return (time.time() - start_time) * 1000
     except socket.timeout:
-        return -1  # Nenhuma resposta
+        return -1
 
-# =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
-# Função principal para varrer a rede
-# =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+
+def get_mac_address(ip: str) -> str:
+    """
+    Obtém o endereço MAC do cache ARP do sistema para o IP fornecido.
+    """
+    try:
+        with os.popen(f"arp -n {ip}") as arp_output:
+            lines = arp_output.readlines()
+            for line in lines:
+                if ip in line:
+                    parts = line.split()
+                    if len(parts) >= 3:
+                        return parts[2]
+    except Exception as e:
+        pass
+    return "MAC não encontrado"
+
+
 def scan_network(network: str, timeout: int) -> None:
-    """
-    Realiza a varredura de rede para identificar hosts ativos.
-    """
     network_obj = ipaddress.ip_network(network, strict=False)
-    active_hosts: List[Tuple[str, float]] = []
+    active_hosts: List[Tuple[str, str, float]] = []
     total_hosts = len(list(network_obj.hosts()))
     start_scan = time.time()
 
@@ -77,7 +69,8 @@ def scan_network(network: str, timeout: int) -> None:
             print(f"Verificando host {host} ({i}/{total_hosts})...")
             response_time = send_and_receive_icmp(str(host), timeout, identifier=12345)
             if response_time >= 0:
-                active_hosts.append((str(host), response_time))
+                mac_address = get_mac_address(str(host))
+                active_hosts.append((str(host), mac_address, response_time))
         except KeyboardInterrupt:
             print("\nVarredura interrompida pelo usuário!")
             break
@@ -91,13 +84,11 @@ def scan_network(network: str, timeout: int) -> None:
     print(f"Máquinas ativas encontradas: {len(active_hosts)}")
     print(f"Tempo total de varredura: {total_time:.2f} segundos\n")
     print("Hosts ativos:")
-    for host, time_ms in active_hosts:
-        print(f"{host} - Tempo de resposta: {time_ms:.2f} ms")
+    print(f"{'IP':<15} {'MAC':<20} {'Tempo de resposta':<10}")
+    for host, mac, time_ms in active_hosts:
+        print(f"{host:<15} {mac:<20} {time_ms:.2f} ms")
 
 
-# =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
-# Entrada principal do programa
-# =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
 if __name__ == "__main__":
     import sys
 
