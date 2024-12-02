@@ -18,6 +18,25 @@ def generate_html(history: list, output_file: str) -> None:
         f.write("</ul>\n</body>\n</html>")
 
 # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+# Função para processar pacotes HTTP
+# =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+def process_http_packet(data: bytes) -> Optional[str]:
+    """
+    Processa um pacote HTTP e retorna a URL requisitada, se encontrada.
+    """
+    try:
+        request = data.decode(errors="ignore")
+        if "GET" in request or "POST" in request:
+            lines = request.split("\r\n")
+            for line in lines:
+                if line.startswith("Host:"):
+                    host = line.split(":")[1].strip()
+                    return f"http://{host}"
+        return None
+    except Exception:
+        return None
+
+# =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
 # Função para processar pacotes DNS
 # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
 def process_dns_packet(data: bytes) -> Optional[str]:
@@ -62,17 +81,11 @@ def sniff_traffic(interface: str, output_file: str) -> None:
 
             # Verificar se o pacote é grande o suficiente para o cabeçalho Ethernet
             if len(packet) < 14:
-                print("Pacote ignorado: tamanho insuficiente para cabeçalho Ethernet")
                 continue
 
             # Processa cabeçalho Ethernet
             eth_header = packet[:14]
-            try:
-                eth_data = struct.unpack("!6s6sH", eth_header)
-            except struct.error:
-                print("Erro ao desempacotar cabeçalho Ethernet")
-                continue
-
+            eth_data = struct.unpack("!6s6sH", eth_header)
             eth_protocol = eth_data[2]
 
             # Se o protocolo não for IPv4, ignore
@@ -81,17 +94,11 @@ def sniff_traffic(interface: str, output_file: str) -> None:
 
             # Verificar se o pacote é grande o suficiente para o cabeçalho IPv4
             if len(packet) < 34:
-                print("Pacote ignorado: tamanho insuficiente para cabeçalho IPv4")
                 continue
 
             # Processa cabeçalho IPv4
             ip_header = packet[14:34]
-            try:
-                iph = struct.unpack("!BBHHHBBH4s4s", ip_header)
-            except struct.error:
-                print("Erro ao desempacotar cabeçalho IPv4")
-                continue
-
+            iph = struct.unpack("!BBHHHBBH4s4s", ip_header)
             protocol = iph[6]
             source_ip = socket.inet_ntoa(iph[8])
             dest_ip = socket.inet_ntoa(iph[9])
@@ -99,14 +106,9 @@ def sniff_traffic(interface: str, output_file: str) -> None:
             # Se for UDP (DNS)
             if protocol == 17:  # UDP
                 if len(packet) < 42:
-                    print("Pacote ignorado: tamanho insuficiente para cabeçalho UDP")
                     continue
                 udp_header = packet[34:42]
-                try:
-                    src_port, dest_port, length, checksum = struct.unpack("!HHHH", udp_header)
-                except struct.error:
-                    print("Erro ao desempacotar cabeçalho UDP")
-                    continue
+                src_port, dest_port, length, checksum = struct.unpack("!HHHH", udp_header)
 
                 # DNS está na porta 53
                 if src_port == 53 or dest_port == 53:
@@ -116,6 +118,24 @@ def sniff_traffic(interface: str, output_file: str) -> None:
                         now = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
                         history.append((now, source_ip, f"http://{domain}"))
                         print(f"DNS: {domain} de {source_ip}")
+
+            # Se for TCP (HTTP)
+            elif protocol == 6:  # TCP
+                if len(packet) < 54:
+                    continue
+                tcp_header = packet[34:54]
+                src_port, dest_port, seq, ack, offset_reserved_flags, window, checksum, urg_ptr = struct.unpack(
+                    "!HHLLHHHH", tcp_header
+                )
+
+                # HTTP está na porta 80
+                if src_port == 80 or dest_port == 80:
+                    http_data = packet[54:]
+                    url = process_http_packet(http_data)
+                    if url:
+                        now = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
+                        history.append((now, source_ip, url))
+                        print(f"HTTP: {url} de {source_ip}")
 
             # Atualiza o arquivo HTML
             generate_html(history, output_file)
