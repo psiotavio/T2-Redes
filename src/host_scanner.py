@@ -42,6 +42,7 @@ def send_and_receive_icmp(host: str, timeout: int, identifier: int) -> float:
 def get_mac_address(ip: str) -> str:
     """
     Obtém o endereço MAC do cache ARP do sistema para o IP fornecido.
+    Ignora entradas inválidas como nomes de interfaces.
     """
     try:
         with os.popen(f"arp -n {ip}") as arp_output:
@@ -50,15 +51,22 @@ def get_mac_address(ip: str) -> str:
                 if ip in line:
                     parts = line.split()
                     if len(parts) >= 3:
-                        return parts[2]
+                        mac = parts[2]
+                        # Verifica se a string é um endereço MAC válido
+                        if len(mac) == 17 and all(c in "0123456789abcdefABCDEF:" for c in mac):
+                            return mac
     except Exception as e:
         pass
     return "MAC não encontrado"
 
 
+
 def scan_network(network: str, timeout: int) -> None:
+    """
+    Realiza a varredura de rede e retorna apenas os hosts com endereço MAC.
+    """
     network_obj = ipaddress.ip_network(network, strict=False)
-    active_hosts: List[Tuple[str, str, float]] = []
+    active_hosts_with_mac: List[Tuple[str, str, float]] = []
     total_hosts = len(list(network_obj.hosts()))
     start_scan = time.time()
 
@@ -70,7 +78,8 @@ def scan_network(network: str, timeout: int) -> None:
             response_time = send_and_receive_icmp(str(host), timeout, identifier=12345)
             if response_time >= 0:
                 mac_address = get_mac_address(str(host))
-                active_hosts.append((str(host), mac_address, response_time))
+                if mac_address != "MAC não encontrado":
+                    active_hosts_with_mac.append((str(host), mac_address, response_time))
         except KeyboardInterrupt:
             print("\nVarredura interrompida pelo usuário!")
             break
@@ -81,11 +90,11 @@ def scan_network(network: str, timeout: int) -> None:
     # Relatório final
     print("\nRelatório de varredura:")
     print(f"Total de máquinas na rede: {total_hosts}")
-    print(f"Máquinas ativas encontradas: {len(active_hosts)}")
+    print(f"Máquinas ativas com MAC encontradas: {len(active_hosts_with_mac)}")
     print(f"Tempo total de varredura: {total_time:.2f} segundos\n")
-    print("Hosts ativos:")
+    print("Hosts ativos com MAC:")
     print(f"{'IP':<15} {'MAC':<20} {'Tempo de resposta':<10}")
-    for host, mac, time_ms in active_hosts:
+    for host, mac, time_ms in active_hosts_with_mac:
         print(f"{host:<15} {mac:<20} {time_ms:.2f} ms")
 
 
